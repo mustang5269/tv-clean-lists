@@ -1,0 +1,48 @@
+# Rebuilds lists.json every day from the newest Clean Your TV lists and the newest CleanYourTV app
+# release, and commits it only when the lists changed. TV Clean downloads it from this repo.
+name: Build lists
+
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-lists
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Newest Clean Your TV lists
+        run: git clone --depth 1 https://github.com/Gathin23/cleanyourtv upstream
+
+      - name: Reviewed lists from the newest CleanYourTV app release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api repos/udhaykumarbala/cleanyourtv-app/releases/latest --jq .tag_name)
+          curl -fsSL --retry 3 -o app.apk "https://github.com/udhaykumarbala/cleanyourtv-app/releases/download/$tag/cleanyourtv-${tag#v}.apk"
+          unzip -p app.apk tv/cleanyour/core/spec/profiles.json > reviewed.json
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Build and check
+        run: |
+          python3 build_lists.py reviewed.json upstream/examples lists.json \
+            --app-release "$TAG" --community-commit "$(git -C upstream rev-parse --short HEAD)"
+
+      - name: Publish when the lists changed
+        run: |
+          if git diff --quiet -- lists.json; then echo "No change"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lists.json
+          git commit -m "Lists from CleanYourTV app $TAG and Clean Your TV $(git -C upstream rev-parse --short HEAD)"
+          git push
